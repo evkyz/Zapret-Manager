@@ -1,0 +1,30 @@
+# Виртуальное окружение
+.venv/
+venv/
+env/
+
+# Кэш Python
+__pycache__/
+*.py[cod]
+*$py.class
+
+# PyInstaller
+build/
+dist/
+*.spec
+*.manifest
+
+# Логи и настройки (могут содержать личные данные)
+*.log
+app.log
+tg_proxy.log
+settings.json
+scores.json
+
+# Системный мусор
+.DS_Store
+Thumbs.db
+
+# IDE
+.idea/
+.vscode/
