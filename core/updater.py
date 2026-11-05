@@ -1,5 +1,8 @@
 import os
 import re
+import shutil
+import tempfile
+import zipfile
 from pathlib import Path
 import requests
 
@@ -8,43 +11,9 @@ VERSION_URL = "https://raw.githubusercontent.com/Flowseal/zapret-discord-youtube
 RELEASE_API_URL = "https://api.github.com/repos/Flowseal/zapret-discord-youtube/releases/latest"
 
 
-def get_downloads_dir() -> Path:
-    """
-    Системная папка «Загрузки».
-    Пробует User Shell Folders и Shell Folders.
-    Fallback — %USERPROFILE%\\Downloads.
-    """
-    import winreg
-
-    guid = "{374DE290-123F-4565-9164-39C4925E467B}"
-
-    locations = [
-        (winreg.HKEY_CURRENT_USER,
-         r"Software\Microsoft\Windows\CurrentVersion\Explorer\User Shell Folders"),
-        (winreg.HKEY_CURRENT_USER,
-         r"Software\Microsoft\Windows\CurrentVersion\Explorer\Shell Folders"),
-    ]
-
-    for hive, subkey in locations:
-        try:
-            key = winreg.OpenKey(hive, subkey, 0, winreg.KEY_READ)
-            try:
-                raw, _ = winreg.QueryValueEx(key, guid)
-                expanded = os.path.expandvars(raw)
-                p = Path(expanded)
-                if p.is_dir():
-                    return p
-            finally:
-                winreg.CloseKey(key)
-        except Exception:
-            pass
-
-    fallback = Path.home() / "Downloads"
-    try:
-        fallback.mkdir(parents=True, exist_ok=True)
-    except Exception:
-        pass
-    return fallback
+def get_temp_dir() -> Path:
+    """Системная папка %TEMP%."""
+    return Path(tempfile.gettempdir())
 
 
 def get_local_zapret_version(zapret_dir: Path | None) -> str | None:
@@ -97,6 +66,7 @@ def get_latest_release_info(timeout: float = 10.0) -> dict | None:
     """
     Данные последнего релиза с GitHub API:
     version, download_url, asset_name. None при ошибке.
+    Берём только .zip.
     """
     headers = {
         "Accept": "application/vnd.github+json",
@@ -127,15 +97,49 @@ def get_latest_release_info(timeout: float = 10.0) -> dict | None:
         return None
 
     assets = data.get("assets") or []
-    for ext in (".rar", ".zip", ".tar.gz"):
-        for asset in assets:
-            name = asset.get("name", "")
-            if name.endswith(ext):
-                url = asset.get("browser_download_url")
-                if url:
-                    return {
-                        "version": tag,
-                        "download_url": url,
-                        "asset_name": name,
-                    }
+    for asset in assets:
+        name = asset.get("name", "")
+        if not name.endswith(".zip"):
+            continue
+        url = asset.get("browser_download_url")
+        if url:
+            return {
+                "version": tag,
+                "download_url": url,
+                "asset_name": name,
+            }
     return None
+
+
+def extract_zip(zip_path: Path, extract_to: Path) -> Path | None:
+    """
+    Распаковывает zip в extract_to.
+    Возвращает путь к папке, содержимое которой нужно скопировать
+    в zapret_dir:
+    - если внутри одна корневая папка (zapret-discord-youtube-X.Y.Z) — её путь;
+    - если несколько файлов/папок в корне — extract_to.
+    Возвращает None при ошибке.
+    """
+    try:
+        extract_to.mkdir(parents=True, exist_ok=True)
+        with zipfile.ZipFile(zip_path, "r") as zf:
+            zf.extractall(extract_to)
+    except Exception as e:
+        print(f"[updater] Ошибка распаковки {zip_path}: {e}")
+        return None
+
+    entries = [p for p in extract_to.iterdir() if p.name != "__MACOSX"]
+    dirs = [p for p in entries if p.is_dir()]
+    files = [p for p in entries if p.is_file()]
+
+    if len(dirs) == 1 and not files:
+        return dirs[0]
+    return extract_to
+
+
+def safe_rmtree(path: Path) -> None:
+    """Удаляет дерево, игнорируя ошибки (файл заблокирован и т.п.)."""
+    try:
+        shutil.rmtree(path, ignore_errors=True)
+    except Exception:
+        pass

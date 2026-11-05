@@ -1,0 +1,12 @@
+cd "F:\UserFolders\Documents\GitHub\Zapret Manager"
+@"
+PySide6==6.12.0
+requests==2.34.2
+tg-ws-proxy==1.11.4
+
+# build
+pyinstaller==6.22.3
+"@ | Out-File -FilePath requirements.txt -Encoding utf8
+git add requirements.txt
+git commit -m "Add requirements.txt"
+git push

@@ -1,6 +1,7 @@
 import sys
 import os
 import secrets
+import shutil
 from pathlib import Path
 from datetime import datetime
 
@@ -23,7 +24,8 @@ from core.config import (
 from core.selector import scan_all
 from core.updater import (
     check_latest_version, get_local_zapret_version,
-    get_latest_release_info, get_downloads_dir,
+    get_latest_release_info, get_temp_dir,
+    extract_zip, safe_rmtree,
 )
 from core.runner import WinwsRunner, kill_all_winws, stop_zapret_service
 from gui.autostart import (
@@ -35,7 +37,7 @@ STRATEGY_ARGV_ROLE = Qt.ItemDataRole.UserRole + 1
 STRATEGY_NAME_ROLE = Qt.ItemDataRole.UserRole + 2
 RUNNING_ROLE = Qt.ItemDataRole.UserRole + 3
 
-APP_VERSION = "v.0.7.0"
+APP_VERSION = "v.0.8.0"
 APP_COPYRIGHT = "© EvKyz, 2026"
 
 RUNNING_MARK = "✓"
@@ -302,7 +304,6 @@ class MainWindow(QMainWindow):
         layout.addWidget(self.cb_updates)
 
         self.cb_admin_task = QCheckBox("Автозапуск при входе в систему")
-        # Синхронизация с реальным наличием задачи в Планировщике
         try:
             actual_task = is_admin_task_enabled()
         except Exception:
@@ -372,13 +373,16 @@ class MainWindow(QMainWindow):
         form.setSpacing(8)
 
         self.tg_host_edit = QLineEdit(self.settings.tg_host)
+        self._attach_russian_context_menu(self.tg_host_edit)
         form.addRow("Host:", self.tg_host_edit)
 
         self.tg_port_edit = QLineEdit(str(self.settings.tg_port))
+        self._attach_russian_context_menu(self.tg_port_edit)
         form.addRow("Port:", self.tg_port_edit)
 
         self.tg_secret_edit = QLineEdit(self.settings.tg_secret)
         self.tg_secret_edit.setMaxLength(32)
+        self._attach_russian_context_menu(self.tg_secret_edit)
         form.addRow("Secret (32 hex):", self.tg_secret_edit)
 
         self.tg_link_edit = QLineEdit()
@@ -386,6 +390,7 @@ class MainWindow(QMainWindow):
         self.tg_link_edit.setPlaceholderText(
             "Ссылка появится после запуска прокси"
         )
+        self._attach_russian_context_menu(self.tg_link_edit)
         form.addRow("Прокси-ссылка:", self.tg_link_edit)
 
         self.tg_status_widget = StatusDotLabel("Прокси остановлен")
@@ -515,19 +520,16 @@ class MainWindow(QMainWindow):
         self.downloader: DownloadWorker | None = None
         self._really_quit = False
 
-        # Один таймер на одиночный клик — создаётся один раз
         self._tray_click_timer = QTimer(self)
         self._tray_click_timer.setSingleShot(True)
         self._tray_click_timer.setInterval(80)
         self._tray_click_timer.timeout.connect(self.show_from_tray)
 
-        # Таймер обновления статуса TG Proxy
         self._tg_status_timer = QTimer(self)
         self._tg_status_timer.setInterval(1500)
         self._tg_status_timer.timeout.connect(self._refresh_tg_status_widget)
         self._tg_status_timer.start()
 
-        # Таймер проверки «жив ли winws» после _apply_strategy
         self._winws_check_timer: QTimer | None = None
 
         self._apply_tg_proxy_tab_state(self.settings.tg_proxy_enabled)
@@ -541,6 +543,63 @@ class MainWindow(QMainWindow):
         self._refresh_tg_status_widget()
 
         QTimer.singleShot(0, self._maybe_apply_on_start)
+
+    # ---------- Русское контекстное меню для QLineEdit ----------
+
+    def _attach_russian_context_menu(self, line_edit: QLineEdit):
+        """
+        Заменяет стандартное английское контекстное меню
+        (Cut / Copy / Paste / Select All) на русское.
+        Для readonly-полей «Вырезать» и «Вставить» скрываются
+        автоматически по флагам действий.
+        """
+        line_edit.setContextMenuPolicy(Qt.CustomContextMenu)
+
+        def show_menu(pos):
+            menu = QMenu(line_edit)
+
+            act_undo = QAction("Отменить", line_edit)
+            act_undo.setEnabled(line_edit.isUndoAvailable()
+                                and not line_edit.isReadOnly())
+            act_undo.triggered.connect(line_edit.undo)
+            menu.addAction(act_undo)
+
+            act_redo = QAction("Повторить", line_edit)
+            act_redo.setEnabled(line_edit.isRedoAvailable()
+                                and not line_edit.isReadOnly())
+            act_redo.triggered.connect(line_edit.redo)
+            menu.addAction(act_redo)
+
+            menu.addSeparator()
+
+            act_cut = QAction("Вырезать", line_edit)
+            act_cut.setEnabled(line_edit.hasSelectedText()
+                               and not line_edit.isReadOnly())
+            act_cut.triggered.connect(line_edit.cut)
+            menu.addAction(act_cut)
+
+            act_copy = QAction("Копировать", line_edit)
+            act_copy.setEnabled(line_edit.hasSelectedText())
+            act_copy.triggered.connect(line_edit.copy)
+            menu.addAction(act_copy)
+
+            act_paste = QAction("Вставить", line_edit)
+            act_paste.setEnabled(
+                not line_edit.isReadOnly()
+                and bool(QApplication.clipboard().text())
+            )
+            act_paste.triggered.connect(line_edit.paste)
+            menu.addAction(act_paste)
+
+            menu.addSeparator()
+
+            act_select_all = QAction("Выбрать всё", line_edit)
+            act_select_all.triggered.connect(line_edit.selectAll)
+            menu.addAction(act_select_all)
+
+            menu.exec(line_edit.mapToGlobal(pos))
+
+        line_edit.customContextMenuRequested.connect(show_menu)
 
     # ---------- Видимость/доступность вкладки TG Proxy ----------
 
@@ -760,7 +819,6 @@ class MainWindow(QMainWindow):
             )
 
     def on_view_log(self):
-        """Открывает файл лога в системном просмотрщике (блокноте)."""
         try:
             if not LOG_FILE.exists():
                 LOG_FILE.parent.mkdir(parents=True, exist_ok=True)
@@ -1115,7 +1173,7 @@ class MainWindow(QMainWindow):
             "Обновление zapret",
             f"Доступна новая версия zapret: {latest}\n"
             f"У вас: {local}\n\n"
-            f"Скачать?",
+            f"Обновить?",
             default_yes=True,
         ):
             self.log_line("Скачивание отменено пользователем.")
@@ -1134,8 +1192,7 @@ class MainWindow(QMainWindow):
 
         url = info["download_url"]
         asset_name = info["asset_name"]
-        downloads_dir = get_downloads_dir()
-        target = downloads_dir / asset_name
+        target = get_temp_dir() / asset_name
 
         self.log_line(f"Скачиваю: {asset_name}")
         self.log_line(f"URL: {url}")
@@ -1167,24 +1224,164 @@ class MainWindow(QMainWindow):
         path = Path(info)
         self.log_line(f"Скачано: {path}")
 
-        if ask_yes_no(
-            self,
-            "Готово",
-            f"Новая версия zapret скачана:\n{path}\n\n"
-            f"Распакуйте архив и замените содержимое папки zapret.\n"
-            f"Открыть папку с архивом?",
-            default_yes=True,
-        ):
-            try:
-                os.startfile(str(path.parent))
-            except Exception as e:
-                self.log_line(f"[ОШИБКА] Не удалось открыть папку: {e}")
+        if path.suffix.lower() != ".zip":
+            self.log_line(
+                f"[ОШИБКА] Ожидался .zip, получен {path.suffix}. "
+                f"Обновление отменено."
+            )
+            self.tray.showMessage(
+                "Zapret Manager",
+                f"Ожидался .zip, получен {path.suffix}. Обновление отменено.",
+                QSystemTrayIcon.Critical,
+                5000,
+            )
+            return
 
-        self.tray.showMessage(
-            "Zapret Manager",
-            f"Скачано: {path.name}",
-            QSystemTrayIcon.Information,
-            5000,
+        self._auto_update_from_zip(path)
+
+    def _auto_update_from_zip(self, zip_path: Path):
+        """Автоматическое обновление из zip-архива."""
+        if not self.zapret_dir or not self.zapret_dir.is_dir():
+            self.log_line(
+                "[ОШИБКА] Папка zapret не задана — авто-обновление невозможно"
+            )
+            self.tray.showMessage(
+                "Zapret Manager",
+                "Папка zapret не задана — укажите её в настройках.",
+                QSystemTrayIcon.Warning,
+                5000,
+            )
+            return
+
+        self.log_line(f"Авто-обновление из: {zip_path}")
+
+        # 1. Распаковка во временную подпапку %TEMP%\zapret_update_<name>
+        extract_to = get_temp_dir() / f"zapret_update_{zip_path.stem}"
+        safe_rmtree(extract_to)
+        self.log_line(f"Распаковываю в: {extract_to}")
+        src_dir = extract_zip(zip_path, extract_to)
+        if not src_dir:
+            self.log_line("[ОШИБКА] Не удалось распаковать архив")
+            self.tray.showMessage(
+                "Zapret Manager",
+                "Не удалось распаковать архив. Смотрите лог.",
+                QSystemTrayIcon.Critical,
+                5000,
+            )
+            safe_rmtree(extract_to)
+            return
+
+        self.log_line(f"Источник для копирования: {src_dir}")
+
+        # 2. Проверка, что это zapret
+        if not (src_dir / "bin" / "winws.exe").exists():
+            self.log_line(
+                "[ОШИБКА] В распакованном архиве нет bin\\winws.exe. "
+                "Похоже, это не zapret."
+            )
+            self.tray.showMessage(
+                "Zapret Manager",
+                "В архиве нет bin\\winws.exe — обновление отменено.",
+                QSystemTrayIcon.Critical,
+                5000,
+            )
+            safe_rmtree(extract_to)
+            return
+
+        # 3. Запоминаем, был ли запущен winws
+        was_running = bool(self.runner and self.runner.is_running())
+        self.log_line(
+            f"winws.exe был {'запущен' if was_running else 'остановлен'}"
+        )
+
+        # 4. Останавливаем winws и службы
+        if was_running:
+            self.log_line("Останавливаю winws.exe...")
+            try:
+                self.runner.stop()
+            except Exception:
+                pass
+            try:
+                kill_all_winws()
+            except Exception:
+                pass
+            try:
+                stop_zapret_service()
+            except Exception as e:
+                self.log_line(
+                    f"[ПРЕДУПРЕЖДЕНИЕ] stop_zapret_service: {e}. "
+                    f"Если служба zapret запущена, копирование может упасть."
+                )
+
+        # 5. Копируем с заменой
+        self.log_line(
+            f"Копирую содержимое {src_dir} → {self.zapret_dir}"
+        )
+        try:
+            shutil.copytree(
+                str(src_dir),
+                str(self.zapret_dir),
+                dirs_exist_ok=True,
+                ignore=shutil.ignore_patterns(
+                    "_last_winws_stderr.log",
+                    "*.log",
+                ),
+            )
+        except PermissionError as e:
+            self.log_line(f"[ОШИБКА] PermissionError при копировании: {e}")
+            self.log_line(
+                "Возможно, winws.exe всё ещё держит файлы. "
+                "Попробуйте вручную заменить."
+            )
+            self.tray.showMessage(
+                "Zapret Manager",
+                "Не удалось заменить файлы: доступ запрещён. "
+                "Смотрите лог.",
+                QSystemTrayIcon.Critical,
+                5000,
+            )
+            safe_rmtree(extract_to)
+            return
+        except Exception as e:
+            self.log_line(f"[ОШИБКА] Копирование не удалось: {e}")
+            self.tray.showMessage(
+                "Zapret Manager",
+                f"Ошибка копирования: {e}",
+                QSystemTrayIcon.Critical,
+                5000,
+            )
+            safe_rmtree(extract_to)
+            return
+
+        self.log_line("Файлы заменены.")
+
+        # 6. Чистим временную подпапку
+        self.log_line(f"Удаляю временную папку: {extract_to}")
+        safe_rmtree(extract_to)
+
+        # 7. Запускаем winws обратно, если был запущен
+        if was_running and self.settings.last_strategy_argv:
+            self.log_line("Запускаю winws.exe с сохранённой стратегией...")
+            self._apply_strategy(
+                self.settings.last_strategy_argv,
+                self.settings.last_strategy or "(сохранённая)",
+                from_startup=True,
+            )
+        else:
+            self.log_line("winws.exe не перезапускаю")
+
+        # 8. Уведомление о завершении обновления — всплывающее окно
+        try:
+            new_version = get_local_zapret_version(self.zapret_dir) or "?"
+        except Exception:
+            new_version = "?"
+
+        self.log_line(f"zapret обновлён до версии {new_version}")
+
+        QMessageBox.information(
+            self,
+            "Zapret обновлён",
+            f"zapret обновлён до версии {new_version}",
         )
 
     # ---------- Автозапуск при старте ----------
@@ -1431,7 +1628,6 @@ class MainWindow(QMainWindow):
                 4000,
             )
 
-        # Через 3 секунды проверяем, что процесс жив (не блокирует GUI)
         if self._winws_check_timer:
             self._winws_check_timer.stop()
         self._winws_check_timer = QTimer(self)
