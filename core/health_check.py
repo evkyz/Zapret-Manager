@@ -23,10 +23,6 @@ WEIGHTS = {
 
 
 def check_https(host: str, timeout: float = 8.0) -> CheckResult:
-    """
-    Открывает TCP, делает TLS-хендшейк через системный SSL (как curl),
-    отправляет HEAD / и читает хотя бы один байт ответа.
-    """
     name = f"https_{host}"
     start = time.perf_counter()
     sock = None
@@ -44,7 +40,7 @@ def check_https(host: str, timeout: float = 8.0) -> CheckResult:
         req = (
             f"HEAD / HTTP/1.1\r\n"
             f"Host: {host}\r\n"
-            f"User-Agent: ZapretManager/0.1\r\n"
+            f"User-Agent: ZapretManager/1.0.0.0\r\n"
             f"Connection: close\r\n"
             f"\r\n"
         ).encode("ascii")

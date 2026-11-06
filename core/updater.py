@@ -85,11 +85,9 @@ def get_latest_release_info(timeout: float = 10.0) -> dict | None:
             headers=headers,
         )
         if r.status_code != 200:
-            print(f"[updater] GitHub API вернул {r.status_code}: {r.text[:200]}")
             return None
         data = r.json()
-    except Exception as e:
-        print(f"[updater] Ошибка запроса к GitHub API: {e}")
+    except Exception:
         return None
 
     tag = (data.get("tag_name") or "").lstrip("v")
@@ -124,8 +122,7 @@ def extract_zip(zip_path: Path, extract_to: Path) -> Path | None:
         extract_to.mkdir(parents=True, exist_ok=True)
         with zipfile.ZipFile(zip_path, "r") as zf:
             zf.extractall(extract_to)
-    except Exception as e:
-        print(f"[updater] Ошибка распаковки {zip_path}: {e}")
+    except Exception:
         return None
 
     entries = [p for p in extract_to.iterdir() if p.name != "__MACOSX"]
@@ -139,7 +136,4 @@ def extract_zip(zip_path: Path, extract_to: Path) -> Path | None:
 
 def safe_rmtree(path: Path) -> None:
     """Удаляет дерево, игнорируя ошибки (файл заблокирован и т.п.)."""
-    try:
-        shutil.rmtree(path, ignore_errors=True)
-    except Exception:
-        pass
+    shutil.rmtree(path, ignore_errors=True)

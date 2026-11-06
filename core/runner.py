@@ -1,5 +1,4 @@
 import subprocess
-import time
 import sys
 from pathlib import Path
 
@@ -20,11 +19,6 @@ class WinwsRunner:
         return self.proc is not None and self.proc.poll() is None
 
     def start_nowait(self, argv: list[str]) -> bool:
-        """
-        Запускает winws.exe без time.sleep. Возвращает True, если
-        Popen успешно создал процесс. Проверку «жив ли» и вывод stderr
-        делает вызывающая сторона через check_alive().
-        """
         if not self.exe.exists():
             self.log_fn(f"[RUNNER] НЕ НАЙДЕН exe: {self.exe}")
             return False
@@ -61,10 +55,6 @@ class WinwsRunner:
         return True
 
     def check_alive(self) -> bool:
-        """
-        Проверяет, что процесс жив. Если упал — дампит stderr и
-        возвращает False.
-        """
         if self.proc is None:
             return False
         if self.proc.poll() is None:
@@ -84,8 +74,7 @@ class WinwsRunner:
                 err = self.stderr_path.read_text(encoding="utf-8", errors="ignore")
                 err = err.strip()
                 if err:
-                    lines = err.splitlines()
-                    for line in lines[-15:]:
+                    for line in err.splitlines()[-15:]:
                         self.log_fn(f"[STDERR] {line}")
                 else:
                     self.log_fn("[STDERR] пусто")

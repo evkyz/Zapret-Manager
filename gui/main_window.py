@@ -37,7 +37,7 @@ STRATEGY_ARGV_ROLE = Qt.ItemDataRole.UserRole + 1
 STRATEGY_NAME_ROLE = Qt.ItemDataRole.UserRole + 2
 RUNNING_ROLE = Qt.ItemDataRole.UserRole + 3
 
-APP_VERSION = "v.0.8.0"
+APP_VERSION = "v.0.9.0 beta"
 APP_COPYRIGHT = "© EvKyz, 2026"
 
 RUNNING_MARK = "✓"
@@ -285,11 +285,28 @@ class MainWindow(QMainWindow):
         layout.setSpacing(6)
 
         path_row = QHBoxLayout()
-        self.path_label = QLabel(
-            str(self.zapret_dir) if self.zapret_dir
-            else "Папка не найдена — укажите вручную"
-        )
-        self.path_label.setWordWrap(False)
+
+        if self.zapret_dir:
+            self.path_label = QLabel(str(self.zapret_dir))
+            self.path_label.setWordWrap(False)
+            self.path_label.setTextInteractionFlags(
+                Qt.TextInteractionFlag.TextSelectableByMouse
+            )
+        else:
+            self.path_label = QLabel(
+                'Папка не найдена — укажите вручную, или '
+                '<a href="download">скачайте</a>'
+            )
+            self.path_label.setWordWrap(True)
+            self.path_label.setTextFormat(Qt.TextFormat.RichText)
+            self.path_label.setTextInteractionFlags(
+                Qt.TextInteractionFlag.TextBrowserInteraction
+            )
+            self.path_label.setOpenExternalLinks(False)
+            self.path_label.linkActivated.connect(
+                self._on_download_zapret_link
+            )
+
         btn_pick = QPushButton("...")
         btn_pick.setFixedWidth(28)
         btn_pick.clicked.connect(self.pick_dir)
@@ -522,7 +539,7 @@ class MainWindow(QMainWindow):
 
         self._tray_click_timer = QTimer(self)
         self._tray_click_timer.setSingleShot(True)
-        self._tray_click_timer.setInterval(80)
+        self._tray_click_timer.setInterval(60)
         self._tray_click_timer.timeout.connect(self.show_from_tray)
 
         self._tg_status_timer = QTimer(self)
@@ -530,7 +547,10 @@ class MainWindow(QMainWindow):
         self._tg_status_timer.timeout.connect(self._refresh_tg_status_widget)
         self._tg_status_timer.start()
 
-        self._winws_check_timer: QTimer | None = None
+        self._winws_check_timer = QTimer(self)
+        self._winws_check_timer.setSingleShot(True)
+        self._winws_check_timer.setInterval(3000)
+        self._winws_check_timer.timeout.connect(self._check_winws_alive)
 
         self._apply_tg_proxy_tab_state(self.settings.tg_proxy_enabled)
         self._rebuild_tray_menu()
@@ -544,15 +564,186 @@ class MainWindow(QMainWindow):
 
         QTimer.singleShot(0, self._maybe_apply_on_start)
 
+    # ---------- Общий метод для path_label ----------
+
+    def _set_path_label(self, text: str):
+        """Устанавливает path_label как обычный текст (без ссылки)."""
+        self.path_label.setText(text)
+        self.path_label.setTextFormat(Qt.TextFormat.PlainText)
+        self.path_label.setTextInteractionFlags(
+            Qt.TextInteractionFlag.TextSelectableByMouse
+        )
+        try:
+            self.path_label.linkActivated.disconnect()
+        except Exception:
+            pass
+
+    # ---------- Скачивание zapret при первом запуске ----------
+
+    def _on_download_zapret_link(self, link: str):
+        if link != "download":
+            return
+
+        self.log_line("Скачивание zapret для первого запуска...")
+
+        info = get_latest_release_info()
+        if not info:
+            self.log_line("[ОШИБКА] Не удалось получить ссылку на релиз.")
+            QMessageBox.warning(
+                self, "Ошибка",
+                "Не удалось получить ссылку на релиз с GitHub.\n"
+                "Проверьте подключение к интернету."
+            )
+            return
+
+        url = info["download_url"]
+        asset_name = info["asset_name"]
+        target = get_temp_dir() / asset_name
+
+        self.log_line(f"Скачиваю: {asset_name}")
+        self.log_line(f"URL: {url}")
+        self.log_line(f"Куда: {target}")
+
+        self.downloader = DownloadWorker(url, target)
+        self.downloader.progress.connect(self._on_download_progress)
+        self.downloader.finished_.connect(self._on_first_run_download_finished)
+        self.downloader.start()
+
+    def _on_first_run_download_finished(self, ok: bool, info: str):
+        self.progress.setValue(0)
+        self.status_label.setText(APP_VERSION)
+
+        if not ok:
+            self.log_line(f"[ОШИБКА] Скачивание не удалось: {info}")
+            QMessageBox.critical(
+                self, "Ошибка скачивания",
+                f"Не удалось скачать архив:\n{info}"
+            )
+            return
+
+        zip_path = Path(info)
+        self.log_line(f"Скачано: {zip_path}")
+
+        if zip_path.suffix.lower() != ".zip":
+            self.log_line(
+                f"[ОШИБКА] Ожидался .zip, получен {zip_path.suffix}."
+            )
+            QMessageBox.critical(
+                self, "Ошибка",
+                f"Ожидался .zip, получен {zip_path.suffix}."
+            )
+            return
+
+        start_dir = str(Path.home())
+        chosen = QFileDialog.getExistingDirectory(
+            self,
+            "Укажите папку для распаковки zapret",
+            start_dir,
+        )
+        if not chosen:
+            self.log_line("Распаковка отменена пользователем.")
+            return
+
+        chosen_path = Path(chosen)
+
+        extract_to = get_temp_dir() / f"zapret_first_run_{zip_path.stem}"
+        safe_rmtree(extract_to)
+        self.log_line(f"Распаковываю в: {extract_to}")
+        src_dir = extract_zip(zip_path, extract_to)
+        if not src_dir:
+            self.log_line("[ОШИБКА] Не удалось распаковать архив")
+            QMessageBox.critical(
+                self, "Ошибка",
+                "Не удалось распаковать архив. Смотрите лог."
+            )
+            safe_rmtree(extract_to)
+            return
+
+        self.log_line(f"Источник: {src_dir}")
+
+        if not (src_dir / "bin" / "winws.exe").exists():
+            self.log_line(
+                "[ОШИБКА] В архиве нет bin\\winws.exe. Похоже, это не zapret."
+            )
+            QMessageBox.critical(
+                self, "Ошибка",
+                "В архиве нет bin\\winws.exe. Похоже, это не zapret."
+            )
+            safe_rmtree(extract_to)
+            return
+
+        self.log_line(f"Копирую содержимое {src_dir} → {chosen_path}")
+        try:
+            shutil.copytree(
+                str(src_dir),
+                str(chosen_path),
+                dirs_exist_ok=True,
+                ignore=shutil.ignore_patterns(
+                    "_last_winws_stderr.log",
+                    "*.log",
+                ),
+            )
+        except PermissionError as e:
+            self.log_line(f"[ОШИБКА] PermissionError: {e}")
+            QMessageBox.critical(
+                self, "Ошибка",
+                f"Не удалось записать файлы в папку:\n{chosen_path}\n\n{e}"
+            )
+            safe_rmtree(extract_to)
+            return
+        except Exception as e:
+            self.log_line(f"[ОШИБКА] Копирование не удалось: {e}")
+            QMessageBox.critical(
+                self, "Ошибка",
+                f"Ошибка копирования: {e}"
+            )
+            safe_rmtree(extract_to)
+            return
+
+        self.log_line("Файлы распакованы.")
+
+        safe_rmtree(extract_to)
+        try:
+            zip_path.unlink()
+        except Exception:
+            pass
+
+        if not is_valid_zapret_dir(chosen_path):
+            self.log_line(
+                f"[ОШИБКА] {chosen_path} не является папкой zapret "
+                f"(нет bin\\winws.exe или general*.bat)"
+            )
+            QMessageBox.critical(
+                self, "Ошибка",
+                f"В папке {chosen_path} нет bin\\winws.exe "
+                f"или general*.bat.\n"
+                f"Проверьте, что вы выбрали корень распакованного zapret."
+            )
+            return
+
+        self.zapret_dir = chosen_path
+        self.settings.zapret_dir = str(chosen_path)
+        save_settings(self.settings)
+
+        self._set_path_label(str(chosen_path))
+
+        self.runner = WinwsRunner(self.zapret_dir, log_fn=self.log_line)
+        self.btn_scan.setEnabled(True)
+
+        self.log_line(f"Папка zapret: {chosen_path}")
+        self._refresh_winws_menu()
+        self._update_tray_tooltip()
+
+        QMessageBox.information(
+            self,
+            "Готово",
+            f"zapret распакован в:\n{chosen_path}\n\n"
+            f"Можно нажать «Сканировать» для поиска стратегий."
+        )
+
     # ---------- Русское контекстное меню для QLineEdit ----------
 
     def _attach_russian_context_menu(self, line_edit: QLineEdit):
-        """
-        Заменяет стандартное английское контекстное меню
-        (Cut / Copy / Paste / Select All) на русское.
-        Для readonly-полей «Вырезать» и «Вставить» скрываются
-        автоматически по флагам действий.
-        """
         line_edit.setContextMenuPolicy(Qt.CustomContextMenu)
 
         def show_menu(pos):
@@ -858,7 +1049,7 @@ class MainWindow(QMainWindow):
     def _update_tray_tooltip(self):
         if self.runner and self.runner.is_running():
             winws_name = _display_name(self.settings.last_strategy) or "стратегия"
-            winws_line = f"winws.exe работает ({winws_name})"
+            winws_line = f"winws.exe запущен ({winws_name})"
         else:
             winws_line = "winws.exe остановлен"
 
@@ -981,7 +1172,7 @@ class MainWindow(QMainWindow):
         self.zapret_dir = new_path
         self.settings.zapret_dir = str(new_path)
         save_settings(self.settings)
-        self.path_label.setText(str(new_path))
+        self._set_path_label(str(new_path))
         self.runner = WinwsRunner(self.zapret_dir, log_fn=self.log_line)
         self.btn_scan.setEnabled(True)
         self.log_line(f"Папка zapret: {new_path}")
@@ -1240,7 +1431,6 @@ class MainWindow(QMainWindow):
         self._auto_update_from_zip(path)
 
     def _auto_update_from_zip(self, zip_path: Path):
-        """Автоматическое обновление из zip-архива."""
         if not self.zapret_dir or not self.zapret_dir.is_dir():
             self.log_line(
                 "[ОШИБКА] Папка zapret не задана — авто-обновление невозможно"
@@ -1255,7 +1445,6 @@ class MainWindow(QMainWindow):
 
         self.log_line(f"Авто-обновление из: {zip_path}")
 
-        # 1. Распаковка во временную подпапку %TEMP%\zapret_update_<name>
         extract_to = get_temp_dir() / f"zapret_update_{zip_path.stem}"
         safe_rmtree(extract_to)
         self.log_line(f"Распаковываю в: {extract_to}")
@@ -1273,7 +1462,6 @@ class MainWindow(QMainWindow):
 
         self.log_line(f"Источник для копирования: {src_dir}")
 
-        # 2. Проверка, что это zapret
         if not (src_dir / "bin" / "winws.exe").exists():
             self.log_line(
                 "[ОШИБКА] В распакованном архиве нет bin\\winws.exe. "
@@ -1288,13 +1476,11 @@ class MainWindow(QMainWindow):
             safe_rmtree(extract_to)
             return
 
-        # 3. Запоминаем, был ли запущен winws
         was_running = bool(self.runner and self.runner.is_running())
         self.log_line(
             f"winws.exe был {'запущен' if was_running else 'остановлен'}"
         )
 
-        # 4. Останавливаем winws и службы
         if was_running:
             self.log_line("Останавливаю winws.exe...")
             try:
@@ -1313,7 +1499,6 @@ class MainWindow(QMainWindow):
                     f"Если служба zapret запущена, копирование может упасть."
                 )
 
-        # 5. Копируем с заменой
         self.log_line(
             f"Копирую содержимое {src_dir} → {self.zapret_dir}"
         )
@@ -1355,11 +1540,9 @@ class MainWindow(QMainWindow):
 
         self.log_line("Файлы заменены.")
 
-        # 6. Чистим временную подпапку
         self.log_line(f"Удаляю временную папку: {extract_to}")
         safe_rmtree(extract_to)
 
-        # 7. Запускаем winws обратно, если был запущен
         if was_running and self.settings.last_strategy_argv:
             self.log_line("Запускаю winws.exe с сохранённой стратегией...")
             self._apply_strategy(
@@ -1370,7 +1553,6 @@ class MainWindow(QMainWindow):
         else:
             self.log_line("winws.exe не перезапускаю")
 
-        # 8. Уведомление о завершении обновления — всплывающее окно
         try:
             new_version = get_local_zapret_version(self.zapret_dir) or "?"
         except Exception:
@@ -1628,12 +1810,6 @@ class MainWindow(QMainWindow):
                 4000,
             )
 
-        if self._winws_check_timer:
-            self._winws_check_timer.stop()
-        self._winws_check_timer = QTimer(self)
-        self._winws_check_timer.setSingleShot(True)
-        self._winws_check_timer.setInterval(3000)
-        self._winws_check_timer.timeout.connect(self._check_winws_alive)
         self._winws_check_timer.start()
 
     def _check_winws_alive(self):

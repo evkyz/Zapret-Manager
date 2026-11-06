@@ -11,12 +11,6 @@ def resource_path(relative: str) -> Path:
 
 
 def handle_proxy_only_mode() -> None:
-    """
-    Если запущены как ZapretManager.exe --proxy-only ...,
-    передаём аргументы в proxy.tg_ws_proxy.main() и выходим.
-    Вызывается ДО ensure_admin(), чтобы не запрашивать UAC
-    для чисто прокси-режима.
-    """
     if "--proxy-only" not in sys.argv:
         return
 

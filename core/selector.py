@@ -73,7 +73,6 @@ def scan_all(
 
         ok = runner.start_nowait(strat.argv)
         if ok:
-            # Ждём 3 секунды, как раньше, но с проверкой stop_event
             waited = 0.0
             while waited < 3.0:
                 if stop_event.is_set():

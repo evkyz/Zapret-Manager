@@ -13,11 +13,6 @@ ADMIN_TASK_NAME = "ZapretManagerAdmin"
 
 
 def _task_exe_command() -> str:
-    """
-    Команда для /TR в schtasks.
-    В exe-режиме: "C:\path\ZapretManager.exe"
-    В dev-режиме: "C:\path\pythonw.exe" "C:\path\main.py"
-    """
     if getattr(sys, "frozen", False):
         return f'"{sys.executable}"'
 
@@ -30,7 +25,6 @@ def _task_exe_command() -> str:
 
 
 def is_admin_task_enabled() -> bool:
-    """Проверяет, существует ли задача ZapretManagerAdmin."""
     try:
         r = subprocess.run(
             ["schtasks", "/Query", "/TN", ADMIN_TASK_NAME],
@@ -43,11 +37,6 @@ def is_admin_task_enabled() -> bool:
 
 
 def create_admin_task() -> tuple[bool, str]:
-    """
-    Создаёт задачу в Планировщике с /RL HIGHEST /SC ONLOGON.
-    Возвращает (success, error_message).
-    Требует прав администратора.
-    """
     try:
         r = subprocess.run(
             [
@@ -70,7 +59,6 @@ def create_admin_task() -> tuple[bool, str]:
 
 
 def delete_admin_task() -> tuple[bool, str]:
-    """Удаляет задачу ZapretManagerAdmin. Возвращает (success, error_message)."""
     try:
         r = subprocess.run(
             ["schtasks", "/Delete", "/TN", ADMIN_TASK_NAME, "/F"],
